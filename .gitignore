@@ -1,0 +1,8 @@
+data/
+models/
+runs/
+outputs/
+fonts/
+__pycache__/
+*.pyc
+*.tar.gz
