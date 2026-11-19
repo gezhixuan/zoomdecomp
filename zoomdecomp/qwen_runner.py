@@ -199,9 +199,10 @@ class QwenRunner:
                           (inputs["input_ids"] == self.image_token_id).sum())
 
     @torch.inference_mode()
-    def answer_inplace(self, inputs_full, cache_full, keep_idx, qtype, letters):
-        """Keep only the ROI's cached image tokens AT THEIR ORIGINAL mRoPE POSITIONS (background tokens dropped),
-        single forward, first-token logits. `keep_idx`: indices into the image's merged-token order."""
+    def answer_inplace(self, inputs_full, cache_full, keep_idx, qtype, letters, max_new_tokens=8):
+        """Keep only the ROI's cached image tokens AT THEIR ORIGINAL mRoPE POSITIONS (background tokens dropped) and decode
+        greedily over the edited sequence, mirroring `answer`: first-step log-probs plus up to max_new_tokens tokens.
+        `keep_idx`: indices into the image's merged-token order."""
         ids = inputs_full["input_ids"][0]
         img_pos = (ids == self.image_token_id).nonzero().squeeze(1)
         keep = torch.ones_like(ids, dtype=torch.bool)
@@ -221,10 +222,23 @@ class QwenRunner:
         if cache_full.deep is not None:
             extra = dict(visual_pos_masks=mask,
                          deepstack_visual_embeds=[layer[0][keep_idx].to(emb.device, emb.dtype) for layer in cache_full.deep])
-        out = self.lm(inputs_embeds=emb, position_ids=kept_pos, attention_mask=torch.ones_like(kept_ids), **extra)
-        logits = self.model.lm_head(out.last_hidden_state[:, -1]).float()
-        lp0 = torch.log_softmax(logits[0], -1)
-        text = self.tok.decode([int(lp0.argmax())], skip_special_tokens=True).strip()
+        attn = torch.ones_like(kept_ids)
+        out = self.lm(inputs_embeds=emb, position_ids=kept_pos, attention_mask=attn, use_cache=True, **extra)
+        lp0 = torch.log_softmax(self.model.lm_head(out.last_hidden_state[:, -1]).float()[0], -1)
+        eos = self.model.generation_config.eos_token_id
+        eos = {e for e in (list(eos) if isinstance(eos, (list, tuple)) else [eos]) + [self.tok.eos_token_id] if e is not None}
+        past, last_pos, gen, nxt = out.past_key_values, kept_pos[..., -1:], [], int(lp0.argmax())
+        for step in range(max_new_tokens):               # positions continue from the last kept position on every axis
+            gen.append(nxt)
+            if nxt in eos or step == max_new_tokens - 1:
+                break
+            ids1 = torch.tensor([[nxt]], device=kept_ids.device)
+            attn = torch.cat([attn, torch.ones_like(ids1)], 1)
+            out = self.lm(inputs_embeds=self.inner.get_input_embeddings()(ids1), position_ids=last_pos + step + 1,
+                          attention_mask=attn, past_key_values=past, use_cache=True)
+            past = out.past_key_values
+            nxt = int(self.model.lm_head(out.last_hidden_state[:, -1]).argmax())
+        text = self.tok.decode(gen, skip_special_tokens=True).strip()
         return self._pack(text, lp0, qtype, letters, kept_ids.shape[1], int(mask.sum()))
 
 

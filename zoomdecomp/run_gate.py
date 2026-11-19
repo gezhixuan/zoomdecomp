@@ -14,7 +14,7 @@ Conditions (image 1 = full image at budget B unless noted):
   b1_mask_bg         [encode(mask_outside(I_seen, roi))]                HiDe-style context suppression
   a1_cached_roi      [full_B][cached ROI tokens]                        SIEVE-style reinsertion, no encoder call
   a2_cached_only     [cached ROI tokens]  (positions re-rolled)         cached tokens, background dropped
-  a3_cached_inplace  cached ROI tokens kept at ORIGINAL positions, background tokens dropped (single forward)
+  a3_cached_inplace  cached ROI tokens kept at ORIGINAL positions, background tokens dropped (no encoder call)
   *_rand             same operation on a same-size random region (sham)
 """
 import argparse, json, sys, time, traceback, zlib
